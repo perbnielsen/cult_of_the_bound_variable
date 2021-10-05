@@ -75,15 +75,10 @@ impl UniversalMachine {
                 }
                 Operator::Out(c) => print!("{}", registers[c] as u8 as char),
                 Operator::In(c) => {
-                    let mut buffer = String::new();
-                    if let Ok(length) = io::stdin().read_to_string(&mut buffer) {
-                        if length == 1 {
-                            registers[c] = buffer.into_bytes()[0] as u32;
-                        } else {
-                            registers[c] = 0;
-                        }
-                    } else {
-                        registers[c] = 0;
+                    let mut buffer = [0; 1];
+                    match io::stdin().read_exact(&mut buffer) {
+                        Ok(()) => registers[c] = buffer[0] as u32,
+                        _ => registers[c] = 0,
                     }
                 }
                 Operator::Load(b, c) => {
@@ -179,9 +174,9 @@ fn read_program(program_file_name: &str) -> Result<Vec<u32>, Error> {
 fn main() -> io::Result<()> {
     println!("Welcome to the Universal Machine.");
 
-    let program_file = "../sandmark.umz";
+    // let program_file = "../sandmark.umz";
     // let program_file = "../um.um";
-    // let program_file = "../codex.umz";
+    let program_file = "../codex.umz";
     let program = read_program(program_file)?;
     // let mut memory = HashMap::<usize, Vec<u32>>::new();
     let mut memory = vec![];
