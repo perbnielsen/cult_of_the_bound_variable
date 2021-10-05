@@ -1,7 +1,5 @@
-use std::convert::TryInto;
 use std::io::Error;
 use std::{
-    collections::HashMap,
     fs::File,
     io::{self, Read},
 };
@@ -9,9 +7,8 @@ use std::{
 pub struct UniversalMachine {
     instruction_pointer: usize,
     registers: [u32; 8],
-    memory: HashMap<usize, Vec<u32>>,
-    next_mem: usize,
-    free_mem: Vec<usize>,
+    memory: Vec<Vec<u32>>,
+    free_platters: Vec<usize>,
 }
 
 impl UniversalMachine {
@@ -20,12 +17,11 @@ impl UniversalMachine {
             mut instruction_pointer,
             mut registers,
             mut memory,
-            mut next_mem,
-            mut free_mem,
+            free_platters: mut free_allocation_slots,
         }: Self,
     ) {
         loop {
-            let instruction = memory[&0][instruction_pointer];
+            let instruction = memory[0][instruction_pointer];
             let operator = Operator::from(instruction);
             instruction_pointer = instruction_pointer + 1;
             // println!("{:?}", operator);
@@ -38,17 +34,13 @@ impl UniversalMachine {
                 Operator::Read(a, b, c) => {
                     let source = registers[b] as usize;
                     let offset = registers[c] as usize;
-                    registers[a] = memory[&source][offset]
+                    registers[a] = memory[source][offset];
                 }
                 Operator::Write(a, b, c) => {
                     let memory_allocation = registers[a] as usize;
-                    if let Some(allocation) = memory.get_mut(&memory_allocation) {
+                    if let Some(allocation) = memory.get_mut(memory_allocation) {
                         let offset = registers[b];
                         let value = registers[c];
-                        // println!(
-                        //     "Writing {} to memory {} at offset {} from register {}",
-                        //     value, memory_allocation, offset, a
-                        // );
                         allocation[offset as usize] = value
                     } else {
                         println!("Failed to write value {} to memory {}", registers[c], a);
@@ -61,26 +53,27 @@ impl UniversalMachine {
                 Operator::NotAnd(a, b, c) => registers[a] = !(registers[b] & registers[c]),
                 Operator::Halt => break,
                 Operator::Alloc(b, c) => {
-                    let mem_size = registers[c] as usize;
-
-                    let mem_index = match free_mem.pop() {
-                        Some(free_index) => free_index,
+                    let allocation_size = registers[c] as usize;
+                    let allocation = vec![0; allocation_size];
+                    let allocation_slot = match free_allocation_slots.pop() {
+                        Some(free_allocation_slot) => {
+                            memory[free_allocation_slot] = allocation;
+                            free_allocation_slot
+                        }
                         None => {
-                            let free_index = next_mem;
-                            next_mem += 1;
-                            free_index
+                            memory.push(allocation);
+                            memory.len() - 1
                         }
                     };
 
-                    memory.insert(mem_index, vec![0; mem_size]);
-                    registers[b] = mem_index as u32;
+                    registers[b] = allocation_slot as u32;
                 }
                 Operator::Dealloc(c) => {
-                    let target = registers[c] as usize;
-                    memory.remove(&target);
-                    free_mem.push(target);
+                    let allocation_slot = registers[c] as usize;
+                    memory[allocation_slot] = vec![];
+                    free_allocation_slots.push(allocation_slot);
                 }
-                Operator::Out(c) => print!("{}", registers[c as usize] as u8 as char),
+                Operator::Out(c) => print!("{}", registers[c] as u8 as char),
                 Operator::In(c) => {
                     let mut buffer = String::new();
                     if let Ok(length) = io::stdin().read_to_string(&mut buffer) {
@@ -96,9 +89,9 @@ impl UniversalMachine {
                 Operator::Load(b, c) => {
                     let target = registers[b] as usize;
                     if target != 0 {
-                        if let Some(program) = memory.get(&target) {
+                        if let Some(program) = memory.get(target) {
                             let program_clone = program.clone();
-                            memory.insert(0, program_clone);
+                            memory[0] = program_clone;
                         } else {
                             println!("Failed to load program from array {}", b);
                             break;
@@ -128,7 +121,7 @@ enum Operator {
     Halt,
     Alloc(usize, usize),
     Dealloc(usize),
-    Out(i8),
+    Out(usize),
     In(usize),
     Load(usize, usize),
     Immediate(usize, u32),
@@ -136,12 +129,13 @@ enum Operator {
 }
 
 impl From<u32> for Operator {
-    fn from(bit_pattern: u32) -> Self {
-        let a = (bit_pattern >> 6 & 7) as usize;
-        let b = (bit_pattern >> 3 & 7) as usize;
-        let c = (bit_pattern & 7) as usize;
+    fn from(instruction: u32) -> Self {
+        let a = (instruction >> 6 & 7) as usize;
+        let b = (instruction >> 3 & 7) as usize;
+        let c = (instruction & 7) as usize;
+        let opcode = instruction >> 28;
 
-        match bit_pattern >> 28 {
+        match opcode {
             0 => Operator::CondMove(a, b, c),
             1 => Operator::Read(a, b, c),
             2 => Operator::Write(a, b, c),
@@ -152,12 +146,12 @@ impl From<u32> for Operator {
             7 => Operator::Halt,
             8 => Operator::Alloc(b, c),
             9 => Operator::Dealloc(c),
-            10 => Operator::Out(c.try_into().unwrap()),
+            10 => Operator::Out(c),
             11 => Operator::In(c),
             12 => Operator::Load(b, c),
             13 => Operator::Immediate(
-                (bit_pattern >> 25 & 7) as usize,
-                bit_pattern & 0b1111111111111111111111111, // - 1,
+                (instruction >> 25 & 7) as usize,
+                instruction & 0b1111111111111111111111111,
             ),
             opcode => Operator::Unsupported(opcode),
         }
@@ -189,15 +183,15 @@ fn main() -> io::Result<()> {
     // let program_file = "../um.um";
     // let program_file = "../codex.umz";
     let program = read_program(program_file)?;
-    let mut memory = HashMap::<usize, Vec<u32>>::new();
+    // let mut memory = HashMap::<usize, Vec<u32>>::new();
+    let mut memory = vec![];
     memory.insert(0, program);
 
     let um = UniversalMachine {
         instruction_pointer: 0,
         registers: [0; 8],
         memory,
-        next_mem: 1,
-        free_mem: vec![],
+        free_platters: vec![],
     };
 
     UniversalMachine::run(um);
